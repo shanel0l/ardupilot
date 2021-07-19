@@ -7,6 +7,15 @@
 #include <RC_Channel/RC_Channel.h>     // RC Channel Library
 #include "AP_MotorsMulticopter.h"
 
+//for Stork Project 16Jul2021----------------------------------------------------------------------
+//Refer to AP_MotorsTri.cpp and AP_MotorsTri.h for yaw logic output
+#include <SRV_Channel/SRV_Channel.h> //for Stork control fin servo output
+#include <AP_Motors_Class.h> //16Jul2021 1158 testing
+#define AP_MOTORS_CH_STORK_YAW   CH_7 //tail servo using CH_7
+#define AP_MOTORS_STORK_SERVO_RANGE_DEG_MIN   5 //minimum tail angle movement of servo in degree
+#define AP_MOTORS_STORK_SERVO_RANGE_DEG_MAX   80 //maximum tail angle movement of servo in degree
+//for Stork Project 16Jul2021----------------------------------------------------------------------
+
 #define AP_MOTORS_MATRIX_YAW_FACTOR_CW   -1
 #define AP_MOTORS_MATRIX_YAW_FACTOR_CCW   1
 
@@ -125,6 +134,13 @@ protected:
 
     const char*         _frame_class_string = ""; // string representation of frame class
     const char*         _frame_type_string = "";  //  string representation of frame type
+
+    //for Stork Project 16Jul2021--------------------------------------------------------------------------------------------------------------
+    float               _stork_pivot_angle; //Angle of stork yaw pivot
+    SRV_Channel         *_stork_yaw_servo; //stork yaw output channel ?????????????I don't understand
+    int16_t             stork_yaw_radio_output(float yaw_input, float yaw_input_max); //servo output function
+    //for Stork Project 16Jul2021--------------------------------------------------------------------------------------------------------------
+
 private:
     static AP_MotorsMatrix *_singleton;
 };

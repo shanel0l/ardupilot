@@ -19,6 +19,10 @@
 
 extern const AP_HAL::HAL& hal;
 
+//for Stork project 19Jul2021--------------------------------------------------------
+uint16_t yaw_output;
+//for Stork project 19Jul2021--------------------------------------------------------
+
 // init
 void AP_MotorsMatrix::init(motor_frame_class frame_class, motor_frame_type frame_type)
 {
@@ -33,6 +37,20 @@ void AP_MotorsMatrix::init(motor_frame_class frame_class, motor_frame_type frame
 
     // setup the motors
     setup_motors(frame_class, frame_type);
+
+    //for Stork Project 16Jul2021-------------------------------------------------------------------------
+    //Stork yaw servo setting
+    _stork_yaw_servo=SRV_Channels::get_channel_for(SRV_Channel::k_motor7, AP_MOTORS_CH_STORK_YAW);
+        if(!_stork_yaw_servo)
+        {
+            gcs().send_text(MAV_SEVERITY_ERROR, "MotorsStork: unable to set up yaw channel");
+            //don't set initialised ok
+            return;
+        }
+
+    //allow mapping of motor_7
+    add_motor_num(AP_MOTORS_CH_STORK_YAW);
+    //for Stork Project 16Jul2021------------------------------------------------------------------------
 
     // enable fast channels or instant pwm
     set_update_rate(_speed_hz);
@@ -178,6 +196,10 @@ void AP_MotorsMatrix::output_to_motors()
     for (i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
         if (motor_enabled[i]) {
             rc_write(i, output_to_pwm(_actuator[i]));
+
+            //for Stork project 19Jul2021--------------------------------------------------------
+            rc_write(AP_MOTORS_CH_STORK_YAW, yaw_output); //Stork yaw output to servo
+            //for Stork project 19Jul2021--------------------------------------------------------
         }
     }
 }
@@ -192,6 +214,11 @@ uint16_t AP_MotorsMatrix::get_motor_mask()
             motor_mask |= 1U << i;
         }
     }
+
+    //for Stork Project 19Jul2021-----------------------------------------------------------------------------------------------
+    motor_mask |= 1U<<AP_MOTORS_CH_STORK_YAW; //for adding a motor mask for stork yaw output servo channel CH7
+    //for Stork Project 19Jul2021-----------------------------------------------------------------------------------------------
+
     uint16_t mask = motor_mask_to_srv_channel_mask(motor_mask);
 
     // add parent's mask
@@ -208,6 +235,11 @@ void AP_MotorsMatrix::output_armed_stabilizing()
     float   roll_thrust;                // roll thrust input value, +/- 1.0
     float   pitch_thrust;               // pitch thrust input value, +/- 1.0
     float   yaw_thrust;                 // yaw thrust input value, +/- 1.0
+
+    //for Stork Project 19Jul2021------------------------------------------------------------------------------------------
+    float   yaw_thrust_stork;           // It's for Stork yaw value
+    //for Stork Project 19Jul2021------------------------------------------------------------------------------------------
+
     float   throttle_thrust;            // throttle thrust input value, 0.0 - 1.0
     float   throttle_avg_max;           // throttle thrust average maximum value, 0.0 - 1.0
     float   throttle_thrust_max;        // throttle thrust maximum value, 0.0 - 1.0
@@ -221,6 +253,21 @@ void AP_MotorsMatrix::output_armed_stabilizing()
     roll_thrust = (_roll_in + _roll_in_ff) * compensation_gain;
     pitch_thrust = (_pitch_in + _pitch_in_ff) * compensation_gain;
     yaw_thrust = (_yaw_in + _yaw_in_ff) * compensation_gain;
+
+    //for Stork Project 19Jul2021-----------------------------------------------------------------------------------------
+    // we scale this os a trusht request of 1.0f will ask for full servo deflection at full rear throttle
+    yaw_thrust_stork = (_yaw_in + _yaw_in_ff) * compensation_gain * sinf(radians(_yaw_servo_angle_max_deg));
+    // calculate angle of yaw pivot
+    _stork_pivot_angle = safe_asin(yaw_thrust_stork);
+    if (fabsf(_stork_pivot_angle)>radians(_yaw_servo_angle_max_deg)){
+        limit.yaw = true;
+        _stork_pivot_angle = constrain_float(_stork_pivot_angle, -radians(_yaw_servo_angle_max_deg), radians(_yaw_servo_angle_max_deg));
+    }
+    // calculating yaw output
+    yaw_output = _stork_yaw_servo ->get_trim();
+    yaw_output = stork_yaw_radio_output(_stork_pivot_angle, radians(_yaw_servo_angle_max_deg));
+    //for Stork Project 19Jul2021-----------------------------------------------------------------------------------------
+
     throttle_thrust = get_throttle() * compensation_gain;
     throttle_avg_max = _throttle_avg_max * compensation_gain;
 
@@ -560,6 +607,44 @@ void AP_MotorsMatrix::remove_motor(int8_t motor_num)
     }
 }
 
+void AP_MotorsMatrix::normalise_rpy_factors()
+{
+    float roll_fac = 0.0f;
+    float pitch_fac = 0.0f;
+    float yaw_fac = 0.0f;
+    float throttle_fac = 0.0f;
+
+    // find maximum roll, pitch and yaw factors
+    for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+        if (motor_enabled[i]) {
+            roll_fac = MAX(roll_fac,fabsf(_roll_factor[i]));
+            pitch_fac = MAX(pitch_fac,fabsf(_pitch_factor[i]));
+            yaw_fac = MAX(yaw_fac,fabsf(_yaw_factor[i]));
+            throttle_fac = MAX(throttle_fac,MAX(0.0f,_throttle_factor[i]));
+        }
+    }
+
+    // scale factors back to -0.5 to +0.5 for each axis
+    for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+        if (motor_enabled[i]) {
+            if (!is_zero(roll_fac)) {
+                _roll_factor[i] = 0.5f * _roll_factor[i] / roll_fac;
+            }
+            if (!is_zero(pitch_fac)) {
+                _pitch_factor[i] = 0.5f * _pitch_factor[i] / pitch_fac;
+            }
+            if (!is_zero(yaw_fac)) {
+                _yaw_factor[i] = 0.5f * _yaw_factor[i] / yaw_fac;
+            }
+            if (!is_zero(throttle_fac)) {
+                _throttle_factor[i] = MAX(0.0f,_throttle_factor[i] / throttle_fac);
+            }
+        }
+    }
+}
+
+
+
 void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_type frame_type)
 {
     // remove existing motors
@@ -577,10 +662,15 @@ void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_ty
             switch (frame_type) {
                 case MOTOR_FRAME_TYPE_PLUS:
                     _frame_type_string = "PLUS";
-                    add_motor(AP_MOTORS_MOT_1,  90, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 2);
-                    add_motor(AP_MOTORS_MOT_2, -90, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 4);
-                    add_motor(AP_MOTORS_MOT_3,   0, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  1);
-                    add_motor(AP_MOTORS_MOT_4, 180, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  3);
+
+                    //for Stork Project 16Jul2021---------------------------------------------------------------------
+                    // change the yaw factor to zero, refering to VTOL Arduplane configuration below
+                    add_motor(AP_MOTORS_MOT_1,  90, 0, 2);
+                    add_motor(AP_MOTORS_MOT_2, -90, 0, 4);
+                    add_motor(AP_MOTORS_MOT_3,   0, 0,  1);
+                    add_motor(AP_MOTORS_MOT_4, 180, 0,  3);
+                    //for Stork Project 16Jul2021---------------------------------------------------------------------
+
                     break;
                 case MOTOR_FRAME_TYPE_X:
                     _frame_type_string = "X";
@@ -1059,43 +1149,6 @@ void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_ty
 
 // normalizes the roll, pitch and yaw factors so maximum magnitude is 0.5
 // normalizes throttle factors so max value is 1 and no value is less than 0
-void AP_MotorsMatrix::normalise_rpy_factors()
-{
-    float roll_fac = 0.0f;
-    float pitch_fac = 0.0f;
-    float yaw_fac = 0.0f;
-    float throttle_fac = 0.0f;
-
-    // find maximum roll, pitch and yaw factors
-    for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
-        if (motor_enabled[i]) {
-            roll_fac = MAX(roll_fac,fabsf(_roll_factor[i]));
-            pitch_fac = MAX(pitch_fac,fabsf(_pitch_factor[i]));
-            yaw_fac = MAX(yaw_fac,fabsf(_yaw_factor[i]));
-            throttle_fac = MAX(throttle_fac,MAX(0.0f,_throttle_factor[i]));
-        }
-    }
-
-    // scale factors back to -0.5 to +0.5 for each axis
-    for (uint8_t i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
-        if (motor_enabled[i]) {
-            if (!is_zero(roll_fac)) {
-                _roll_factor[i] = 0.5f * _roll_factor[i] / roll_fac;
-            }
-            if (!is_zero(pitch_fac)) {
-                _pitch_factor[i] = 0.5f * _pitch_factor[i] / pitch_fac;
-            }
-            if (!is_zero(yaw_fac)) {
-                _yaw_factor[i] = 0.5f * _yaw_factor[i] / yaw_fac;
-            }
-            if (!is_zero(throttle_fac)) {
-                _throttle_factor[i] = MAX(0.0f,_throttle_factor[i] / throttle_fac);
-            }
-        }
-    }
-}
-
-
 /*
   call vehicle supplied thrust compensation if set. This allows
   vehicle code to compensate for vehicle specific motor arrangements
@@ -1121,3 +1174,23 @@ void AP_MotorsMatrix::disable_yaw_torque(void)
 
 // singleton instance
 AP_MotorsMatrix *AP_MotorsMatrix::_singleton;
+
+//for Stork project 19Jul2021----------------------------------------------------
+//calculate Stork yaw output
+int16_t AP_MotorsMatrix::stork_yaw_radio_output(float yaw_input, float yaw_input_max)
+{
+    int16_t ret;
+
+    if (_stork_yaw_servo->get_reversed()) {
+        yaw_input = -yaw_input;
+    }
+
+    if (yaw_input >= 0) {
+        ret = (_stork_yaw_servo->get_trim() + (yaw_input / yaw_input_max * (_stork_yaw_servo->get_output_max() - _stork_yaw_servo->get_trim())));
+    } else {
+        ret = (_stork_yaw_servo->get_trim() + (yaw_input / yaw_input_max * (_stork_yaw_servo->get_trim() - _stork_yaw_servo->get_output_min())));
+    }
+
+    return ret;
+}
+//for Stork project 19Jul2021----------------------------------------------------
